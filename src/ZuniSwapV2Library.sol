@@ -1,0 +1,143 @@
+//SPDX-License-Identifier: MIT
+pragma solidity ^0.8.10;
+
+import {ZuniSwapV2Pair} from "./ZuniSwapV2Pair.sol";
+import "./Interface/IZuniSwapV2Pair.sol";
+
+library ZuniSwapV2Library {
+    error InsufficientAmount();
+    error InsufficientLiquidity();
+    error InvalidPath();
+
+    function getReserves(
+        address factoryAddress,
+        address tokenA,
+        address tokenB
+    ) public returns (uint256 reserveA, uint256 reserveB) {
+        (address token0, address token1) = sortTokens(tokenA, tokenB);
+        (uint256 reserve0, uint256 reserve1, ) = IZuniSwapV2Pair(
+            pairFor(factoryAddress, token0, token1)
+        ).getReserves();
+        (reserveA, reserveB) = reserveA == reserve0
+            ? (reserve0, reserve1)
+            : (reserve1, reserve0);
+    }
+
+    function sortTokens(
+        address tokenA,
+        address tokenB
+    ) internal pure returns (address token0, address token1) {
+        return tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+    }
+
+    function pairFor(
+        address factoryAddress,
+        address tokenA,
+        address tokenB
+    ) internal pure returns (address pairAddress) {
+        //this is a very straightforward way of doing it but makes external contract call which will make it expensive.
+        // ZuniswapV2Factory(factoryAddress).pairs(address(token0), address(token1));
+
+        // we will use the whole process defined in EIP-1014, used for address generation
+        (address token0, address token1) = sortTokens(tokenA, tokenB);
+
+        //this code creates address just like CREATE2
+        pairAddress = address(
+            uint160(
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            hex"ff", //first byte helps avoid collision with CREATE
+                            factoryAddress,
+                            keccak256(abi.encodePacked(token0, token1)),
+                            keccak256(type(ZuniSwapV2Pair).creationCode)
+                        )
+                    )
+                )
+            )
+        );
+    }
+
+    // assuming swap fee to be 0.3%
+    function getAmountOut(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) public pure returns (uint256) {
+        if (amountIn == 0) revert InsufficientAmount();
+        if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
+
+        uint256 amountInWithFee = amountIn * 997;
+        uint256 numerator = reserveOut * amountInWithFee;
+        uint256 denominator = (reserveIn * 1000) + amountInWithFee;
+
+        return numerator / denominator;
+    }
+
+    function getAmountsOut(
+        address factory,
+        uint256 amountIn,
+        address[] memory path
+    ) public returns (uint256[] memory) {
+        if (path.length < 2) revert InvalidPath();
+        uint256[] memory amounts = new uint256[](path.length);
+        amounts[0] = amountIn;
+
+        for (uint256 i; i < path.length - 1; i++) {
+            (uint256 reserve0, uint256 reserve1) = getReserves(
+                factory,
+                path[i],
+                path[i + 1]
+            );
+            amounts[i + 1] = getAmountOut(amounts[i], reserve0, reserve1);
+        }
+
+        return amounts;
+    }
+
+    function getAmountIn(
+        uint256 amountOut,
+        uint256 reserveIn,
+        uint reserveOut
+    ) public pure returns (uint256) {
+        if (amountOut == 0) revert InsufficientAmount();
+        if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
+
+        uint256 numerator = reserveIn * amountOut * 1000;
+        uint256 denominator = (reserveOut - amountOut) * 997;
+
+        //we have added 1 to the answer so that it can be guaranteed that that input amount will result in the output amount
+        return (numerator / denominator) + 1;
+    }
+
+    function getAmountsIn(
+        address factory,
+        uint256 amountOut,
+        address[] memory path
+    ) public returns (uint256[] memory) {
+        if (path.length < 2) revert InvalidPath();
+        uint256[] memory amounts = new uint256[](path.length);
+        amounts[path.length - 1] = amountOut;
+
+        for (uint256 i = path.length - 1; i > 0; i--) {
+            (uint256 reserve0, uint256 reserve1) = getReserves(
+                factory,
+                path[i - 1],
+                path[i]
+            );
+            amounts[i - 1] = getAmountIn(amounts[i], reserve0, reserve1);
+        }
+
+        return amounts;
+    }
+
+    function quote(
+        uint256 amountIn,
+        uint256 reserveIn,
+        uint256 reserveOut
+    ) public pure returns (uint256 amountOut) {
+        if (amountIn == 0) revert InsufficientAmount();
+        if (reserveIn == 0 || reserveOut == 0) revert InsufficientLiquidity();
+        return (amountIn * reserveOut) / reserveIn;
+    }
+}
